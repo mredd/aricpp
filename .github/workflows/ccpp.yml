@@ -51,7 +51,7 @@ jobs:
       run: |
         cd samples
         g++ --version
-        CC=gcc-10 CXX=g++-10 make
+        make CC=gcc CXX=g++ CXXFLAGS=-I$(brew --prefix boost)/include LDFLAGS=-L$(brew --prefix boost)/lib
 
   build-macos-clang:
     name: macOS Clang
@@ -64,4 +64,30 @@ jobs:
       run: |
         cd samples
         clang++ --version
-        CC=clang CXX=clang++ make
+        make CC=clang CXX=clang++ CXXFLAGS=-I$(brew --prefix boost)/include LDFLAGS=-L$(brew --prefix boost)/lib
+
+  # boost has been removed from the Windows image, hence we need to install it first
+  build-windows-vs:
+    name: Windows Server 2019 / Visual Studio
+    runs-on: windows-2019
+    steps:
+    - name: Cache boost
+      id: cache-boost
+      uses: actions/cache@v2
+      with:
+        path: C:\hostedtoolcache\windows\Boost\1.75.0\x86_64
+        key: ${{ runner.os }}-boost-1.75.0-x64
+    - name: Install boost
+      if: steps.cache-boost.outputs.cache-hit != 'true'
+      run: |
+        # Use the boost_1_72_0-msvc-14.1-64.exe for Windows 2016
+        $Url = "https://sourceforge.net/projects/boost/files/boost-binaries/1.75.0/boost_1_75_0-msvc-14.2-64.exe"
+        (New-Object System.Net.WebClient).DownloadFile($Url, "$env:TEMP\boost.exe")
+        Start-Process -Wait -FilePath "$env:TEMP\boost.exe" -ArgumentList "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\hostedtoolcache\windows\Boost\1.75.0\x86_64","/COMPONENTS=`"asio,beast,system,thread,program_options`""
+    - uses: actions/checkout@v2
+    - name: Build with Visual Studio
+      shell: cmd
+      run: |
+        set BOOST=C:\hostedtoolcache\windows\Boost\1.75.0\x86_64
+        cd samples
+        nmake /F makefile.win
