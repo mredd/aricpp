@@ -38,3 +38,30 @@ jobs:
         cd samples
         g++ --version
         CC=clang CXX=clang++ make
+
+  build-macos-gcc:
+    name: macOS gcc
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup dependencies
+      run: brew update && brew install boost
+    - name: Build with GCC
+      run: |
+        cd samples
+        g++ --version
+        CC=gcc-10 CXX=g++-10 make
+
+  build-macos-clang:
+    name: macOS Clang
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup dependencies
+      run: brew update && brew install boost
+    - name: Build with Clang
+      run: |
+        cd samples
+        clang++ --version
+        CC=clang CXX=clang++ make
