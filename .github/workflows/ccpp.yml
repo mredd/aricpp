@@ -3,8 +3,8 @@ name: C/C++ CI of aricpp
 on: [push,pull_request]
 
 jobs:
-  build:
-
+  build-ubuntu-gcc:
+    name: Ubuntu gcc
     runs-on: ubuntu-latest
 
     steps:
@@ -15,7 +15,26 @@ jobs:
         sudo apt-get install \
             libboost-dev libboost-thread-dev libboost-program-options-dev \
             libboost-system-dev
-    - name: make
+    - name: Build with GCC
       run: |
         cd samples
-        make
+        g++ --version
+        CC=gcc CXX=g++ make
+
+  build-ubuntu-clang:
+    name: Ubuntu clang
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: setup dependencies
+      run: |
+        sudo apt-get -y update
+        sudo apt-get install \
+            libboost-dev libboost-thread-dev libboost-program-options-dev \
+            libboost-system-dev
+    - name: Build with Clang
+      run: |
+        cd samples
+        g++ --version
+        CC=clang CXX=clang++ make
