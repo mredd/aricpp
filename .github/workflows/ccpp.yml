@@ -4,18 +4,54 @@ on: [push,pull_request]
 
 jobs:
   build:
+    name: Building on ${{ matrix.os }} with ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-20.04
+            cc: gcc
+            cxx: g++
 
-    runs-on: ubuntu-latest
+          - os: ubuntu-20.04
+            cc: clang
+            cxx: clang++
+
+          - os: macos-10.15
+            cc: gcc-10
+            cxx: g++-10
+
+          - os: macos-10.15
+            cc: clang
+            cxx: clang++
 
     steps:
     - uses: actions/checkout@v2
-    - name: setup dependencies
+    - name: Setup dependencies on Ubuntu
+      if: ${{ startsWith(matrix.os, 'ubuntu') }}
       run: |
         sudo apt-get -y update
         sudo apt-get install \
             libboost-dev libboost-thread-dev libboost-program-options-dev \
             libboost-system-dev
+    - name: Setup dependencies on macOS
+      if: ${{ startsWith(matrix.os, 'macos') }}
+      run: brew update && brew install boost
     - name: make
+      env:
+        CC: ${{ matrix.cc }}
+        CXX: ${{ matrix.cxx }}
       run: |
+        echo CC version:
+        echo -----------------------------
+        $CC --version
+        echo #############################
+        echo
+        echo CXX version
+        echo -----------------------------
+        $CXX --version
+        echo #############################
+        echo
         cd samples
-        make
+        make -j2
