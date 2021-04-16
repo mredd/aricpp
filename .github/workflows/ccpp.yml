@@ -7,7 +7,7 @@ env:
   cmake_cxx_flags: -pedantic -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wmissing-declarations -Wmissing-include-dirs -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-overflow=5 -Wundef -Werror
 
 jobs:
-  build:
+  build-unix:
 
     name: ${{ matrix.os }} with ${{ matrix.cc }}
     runs-on: ${{ matrix.os }}
@@ -132,3 +132,84 @@ jobs:
         cmake -B ${BUILD_DIR} -S src-aricpp -DBOOST_ROOT="${GITHUB_WORKSPACE}/boost-${BOOST_VERSION}-${CC}" -DARICPP_BuildExamples=ON -DCMAKE_CXX_FLAGS="${cmake_cxx_flags}"
         cd ${BUILD_DIR}
         make -j2 VERBOSE=1
+
+  # Everything is a little bit different on Windows. Therefore, it gets its own build job.
+  build-windows:
+    name: Windows
+    runs-on: windows-2019
+
+    steps:
+
+    - uses: actions/checkout@v2
+      with:
+        path: src-aricpp
+
+    - name: Cache boost ${{ env.boost_version }}
+      uses: actions/cache@v2
+      id: boost-cache
+      with:
+        path: boost
+        key: ${{ runner.os }}-boost-${{ env.boost_version }}-${{ hashFiles('src-aricpp/.github/workflows/ccpp.yml') }}
+
+    - name: Download bost ${{ env.boost_version }} source code
+      if: steps.boost-cache.outputs.cache-hit != 'true'
+      run: |
+        ${boost_underscore} = "boost_${env:boost_version}" -replace "\.", "_"
+        Write-Host "boost_underscore: ${boost_underscore}"
+        ${boost_url} = "https://downloads.sourceforge.net/project/boost/boost/${env:boost_version}/${boost_underscore}.zip"
+        Write-Host "Start downloading from ${boost_url}"
+        Invoke-WebRequest -Uri "${boost_url}" -OutFile "${boost_underscore}.zip" -UserAgent 'Wget/1.12.1'
+
+        Write-Host "Unzipping boost source code"
+        Add-Type -Assembly "System.IO.Compression.Filesystem"
+        [System.IO.Compression.ZipFile]::ExtractToDirectory("${env:GITHUB_WORKSPACE}\${boost_underscore}.zip", "${env:GITHUB_WORKSPACE}")
+
+    - name: Build boost
+      if: steps.boost-cache.outputs.cache-hit != 'true'
+      run: |
+        ${boost_underscore} = "boost_${env:boost_version}" -replace "\.", "_"
+        cd ${boost_underscore}
+
+        Write-Host "--------------------------------------------------------"
+        Write-Host "--------------------------------------------------------"
+
+        & .\bootstrap.bat --with-libraries=test,thread,system,program_options --build-type=complete
+
+        Write-Host "--------------------------------------------------------"
+        Write-Host "--------------------------------------------------------"
+
+        & .\b2.exe --help
+
+        Write-Host "--------------------------------------------------------"
+        Write-Host "--------------------------------------------------------"
+
+        & .\b2.exe --build-type=complete --with-test --with-thread --with-system --with-program_options
+
+        Write-Host "--------------------------------------------------------"
+        Write-Host "--------------------------------------------------------"
+
+        & .\b2.exe --build-type=complete --with-test --with-thread --with-system --with-program_options --prefix="${env:GITHUB_WORKSPACE}\boost" install
+
+    - name: Build aricpp with custom boost ${{ env.boost_version }}
+      run: |
+        ${BUILD_DIR} = "build-boost-${env:boost_version}" -replace "\.", "_"
+        Remove-Item -Path "${env:GITHUB_WORKSPACE}\${BUILD_DIR}" -Recurse -ErrorAction Ignore
+
+        Write-Host "--------------------------------------------------------"
+        Write-Host "Configuring cmake project"
+        ${BOOST_ROOT} = "${env:GITHUB_WORKSPACE}\boost"
+        Write-Host "BOOST_ROOT: ${BOOST_ROOT}"
+        Get-ChildItem "${BOOST_ROOT}\lib"
+        Write-Host "--------------------------------------------------------"
+        cmake --version
+        Write-Host "--------------------------------------------------------"
+
+        # The CMAKE_CXX_FLAGS are only valid for GNU compilers and the like (like clang).
+        # They are not recognized by MSVC. Therefore, we do not provide any flogs for MSVC
+        # builds the moment.
+
+        cmake -S src-aricpp -B "${BUILD_DIR}" -DBOOST_ROOT:PATH="${BOOST_ROOT}" -DBoost_DEBUG=OFF -DARICPP_BuildExamples=ON
+        Write-Host "--------------------------------------------------------"
+
+        Write-Host "Building project"
+        cmake --build "${BUILD_DIR}"
