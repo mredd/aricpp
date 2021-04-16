@@ -2,33 +2,133 @@ name: C/C++ CI of aricpp
 
 on: [push,pull_request]
 
+env:
+  boost_version: 1.75.0
+  cmake_cxx_flags: -pedantic -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wmissing-declarations -Wmissing-include-dirs -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-overflow=5 -Wundef -Werror
+
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} with ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-20.04
+          cc: gcc-10
+          cxx: g++-10
+        - os: ubuntu-20.04
+          cc: clang-11
+          cxx: clang++-11
+        - os: macos-10.15
+          cc: gcc-10
+          cxx: g++-10
+        - os: macos-10.15
+          # Apple does not provide version-dependent aliases, but clang 12
+          # is Github's default on the macos-10.15 environment
+          cc: clang
+          cxx: clang++
+
 
     steps:
     - uses: actions/checkout@v2
-    - name: setup dependencies new boost
+      with:
+        path: src-aricpp
+
+    # First build against the system-provided boost libraries. For one thing this
+    # is quicker than building a custom boost version and for another thing it is
+    # the default configuration for most users.
+
+    - name: Install boost from apt repository
+      if: ${{ startsWith(matrix.os, 'ubuntu') }}
       run: |
-        sudo rm -rf /usr/lib/libboost_* /usr/lib/cmake/boost_* /usr/lib/libboost_* 
-        sudo apt-get remove 'libboost-.*'
-        sudo apt-get -y update
-        rm -rf tmp && mkdir tmp && cd tmp
-        wget https://dl.bintray.com/boostorg/release/1.75.0/source/boost_1_75_0.tar.gz
-        tar xzvf boost_1_75_0.tar.gz
-        cd boost_1_75_0
-        ./bootstrap.sh --prefix=/usr/ --with-libraries=test,thread,system,program_options
-        ./b2
-        sudo ./b2 install
-    - name: make new boost
+        sudo apt-get update
+        sudo apt-get -y install \
+            libboost-dev libboost-thread-dev libboost-program-options-dev \
+            libboost-system-dev
+
+    # The boost libraries that come bottled with homebrew have been built with clang.
+    # Hence they are not compatible with a gcc build. We could rebuild that homebrew
+    # formula with gcc, but that's as good as building our target boost version anyway.
+    # That's why we skip the system-provided boost build for macOS + gcc.
+    - name: Install boost from homebrew
+      if: ${{ startsWith(matrix.os, 'macos') && ! startsWith(matrix.cc, 'gcc') }}
+      run: brew update && brew install boost
+
+    - name: Build aricpp with system-provided boost
+      if: ${{ ! ( startsWith(matrix.os, 'macos') && startsWith(matrix.cc, 'gcc') ) }}
+      env:
+        CC: ${{ matrix.cc }}
+        CXX: ${{ matrix.cxx }}
       run: |
-        cd examples
-        make clean
-        make
-    - name: cmake new boost
+        BUILD_DIR=build-system-boost
+        rm -rf ${BUILD_DIR}
+        cmake -B ${BUILD_DIR} -S src-aricpp -DARICPP_BuildExamples=ON -DCMAKE_CXX_FLAGS="${cmake_cxx_flags}"
+        cd ${BUILD_DIR}
+        make -j2 VERBOSE=1
+
+    # Cache a ready-built boost version on github to speed up the build process
+    - name: Cache custom boost ${{ env.boost_version }}
+      uses: actions/cache@v2
+      id: boost-cache
+      with:
+        path: boost-${{ env.boost_version }}-${{ matrix.cc }}
+        key: ${{ runner.os }}-boost-${{ env.boost_version }}-${{ matrix.cc }}-${{ hashFiles('src-aricpp/.github/workflows/ccpp.yml') }}
+      
+    - name: Build custom boost ${{ env.boost_version }}
+      if: steps.boost-cache.outputs.cache-hit != 'true'
+      env:
+        CC: ${{ matrix.cc }}
+        CXX: ${{ matrix.cxx }}
+        BOOST_VERSION: ${{ env.boost_version }}
       run: |
-        rm -rf build
-        mkdir build && cd build
-        cmake .. -DARICPP_BuildExamples=ON -DCMAKE_CXX_FLAGS="-pedantic -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wmissing-declarations -Wmissing-include-dirs -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-overflow=5 -Wundef -Werror"
-        make
+        set -x
+
+        if [ "$(uname)" = Darwin ]; then
+          SED='sed -i .old'
+        else
+          SED='sed -i.old'
+        fi
+
+        BOOST_UNDERSCORE="boost_$(echo ${BOOST_VERSION} | tr . _)"
+        rm -rf src-${BOOST_UNDERSCORE}
+        mkdir src-${BOOST_UNDERSCORE}
+        
+        wget --no-verbose https://downloads.sourceforge.net/project/boost/boost/${BOOST_VERSION}/${BOOST_UNDERSCORE}.tar.bz2
+        tar -xjf ${BOOST_UNDERSCORE}.tar.bz2 --strip-components 1
+
+        ./bootstrap.sh --prefix=${INSTALL_PREFIX} --with-libraries=test,thread,system,program_options --with-toolset=${CC}
+        
+        # Modify the project configuration file to use a very specific compiler to build boost.
+        TOOLSET=$(echo $CC | cut -d- -f1)
+        TOOLSET_VERSION=$(echo $CC | cut -d- -f2)
+        if ! ([ "$(uname)" = Darwin ]  && [ "$TOOLSET" = clang ]); then
+          ${SED} -e '/^if ! .* in \[ feature\.values <toolset> \]/,/}/ d' -e '/project : default-build/ d' project-config.jam
+          echo "using ${TOOLSET} : ${TOOLSET_VERSION} : $(which ${CXX}) ;" >> project-config.jam
+        fi
+
+        echo -e "\n\n------   project-config.jam   ------"
+        cat project-config.jam
+        echo -e "----------------\n\n"
+
+        # Do not use BOOST_UNDERSCORE here because we cannot match that path with Github's workflow syntax.
+        # There is no function to transform a string from i.e. 1.75.0 to 1_75_0
+        INSTALL_PREFIX="${GITHUB_WORKSPACE}/boost-${BOOST_VERSION}-${CC}"
+
+        ./b2 toolset=${CC}
+        rm -rf "${INSTALL_PREFIX}"
+        ./b2 install --prefix="${INSTALL_PREFIX}" toolset=${CC}
+        
+    - name: Build aricpp with custom boost ${{ env.boost_version }}
+      env:
+        CC: ${{ matrix.cc }}
+        CXX: ${{ matrix.cxx }}
+        BOOST_VERSION: ${{ env.boost_version }}
+      run: |
+        BUILD_DIR=build-boost-${BOOST_VERSION}
+        rm -rf ${BUILD_DIR}
+        cmake -B ${BUILD_DIR} -S src-aricpp -DBOOST_ROOT="${GITHUB_WORKSPACE}/boost-${BOOST_VERSION}-${CC}" -DARICPP_BuildExamples=ON -DCMAKE_CXX_FLAGS="${cmake_cxx_flags}"
+        cd ${BUILD_DIR}
+        make -j2 VERBOSE=1
